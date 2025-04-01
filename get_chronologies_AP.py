@@ -1,32 +1,12 @@
 import pandas as pd
 from datetime import datetime
 from tqdm import tqdm
-import os
-import argparse
-
-
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--target_path', type=str, help='path to directory containing MIMIC data')
-    parser.add_argument('--modality', type=str, default='both', help='modality - both, notes or tab')
-    parser.add_argument('--window', type=int, default=24, help='temporal context window - 24 or 48')
-    args = parser.parse_args()
-    return args
 
 
 def filter(labs: pd.DataFrame, charts: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """
-    Removes duplicate instances that are present in both chart and lab events from charts.
-    Measurements in chart events that have Warning == 0 are discarded. Warning == 1 or NaN are kept.
-    Measurements in lab events with the 'abnormal' flag are kept, others discarded.
+    # remove duplicates and keep only abnormal lab values
+    # filtering by warning in charts - remove 0 values?    
 
-    Args:
-        labs (pd.DataFrame): DataFrame containing lab events
-        charts (pd.DataFrame): DataFrame containing chart events
-
-    Returns:
-        tuple[pd.DataFrame, pd.DataFrame]: modified lab and chart event DataFrames
-    """
     duplicates = pd.merge(charts, labs, on=['CHARTTIME', 'ITEM_DESC'], how='inner')
     duplicates_row_IDs = duplicates['ROW_ID_x']
 
@@ -37,22 +17,14 @@ def filter(labs: pd.DataFrame, charts: pd.DataFrame) -> tuple[pd.DataFrame, pd.D
 
 
 def remove_duplicates_struc(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Removes duplicate measurements (with the same value) in structured/tabular data 
-    if they are present multiple times at the same timestamp or within one hour of each other. 
-
-    Args:
-        df (pd.DataFrame): DataFrame containing combined structured data
-
-    Returns:
-        pd.DataFrame: modified structured data DataFrame
-    """
     meds = df[df['IS_MED'] == 1]
-    new_df = df[df['IS_MED'] == 0]
-    new_df['CHARTTIME'] = pd.to_datetime(new_df['CHARTTIME'])
+    df = df[df['IS_MED'] == 0]
+    df['CHARTTIME'] = pd.to_datetime(df['CHARTTIME'])
 
+    # Group by VALUE, UNIT, and ITEM
     result = []
-    for _, group in new_df.groupby(['VALUE', 'VALUEUOM', 'ITEM_DESC']):
+    for _, group in df.groupby(['VALUE', 'VALUEUOM', 'ITEM_DESC']):
+        # Sort by TIME within each group (already sorted globally)
         group = group.sort_values(by='CHARTTIME')
         keep_indices = []
         last_time = None
@@ -63,11 +35,10 @@ def remove_duplicates_struc(df: pd.DataFrame) -> pd.DataFrame:
             last_time = row['CHARTTIME']
         
         result.append(group.loc[keep_indices])
-    
-    # if no duplicates, return original input DataFrame
+
     if not result:
         return df
-
+    
     # Combine all groups back into a single dataframe
     filtered_df = pd.concat(result).sort_index()
     filtered_df['CHARTTIME'] = filtered_df['CHARTTIME'].dt.strftime('%Y-%m-%d %H:%M:%S')
@@ -78,16 +49,6 @@ def remove_duplicates_struc(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def temporal_order_struc(tab_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Construct temporally ordered structured data. Measurements are grouped by timestamp and
-    converted to a narrative format. Measurements without timestamps are removed.
-
-    Args:
-        tab_df (pd.DataFrame): DataFrame containing combined structured data
-
-    Returns:
-        pd.DataFrame: DataFrame containing temporally ordered structured data in narrative format
-    """
     # get unique timestamps, group by those. throw out empty values. convert to narrative format - different format if is_input == 1
     # truncate floats after two decimals
 
@@ -106,7 +67,7 @@ def temporal_order_struc(tab_df: pd.DataFrame) -> pd.DataFrame:
                     value = f'{float(value):.2f}'
                 except:
                     ValueError
-            # different phrasing if input event or medication
+            # different phrasing if input event
             if time_df.loc[i, 'IS_INPUT'] == 0 and value != '':
                 output_str += f'{desc} is {value} {uom}. '
             elif time_df.loc[i, 'IS_INPUT'] == 1:
@@ -124,27 +85,15 @@ def temporal_order_struc(tab_df: pd.DataFrame) -> pd.DataFrame:
         text.append(output_str)
     return pd.DataFrame(zip(timestamps, text), columns=['TIME', 'TEXT'])
 
+
 def get_structured(hadmid: int, tab_data: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame], lookup: tuple[pd.DataFrame, pd.DataFrame]) -> pd.DataFrame:
-    """
-    For a given hadmid, gathers all structured data (lab, chart, input, medications) and combines it into
-    one DataFrame. Applies filtering, converting to narrative format, and removal of duplicates.
-
-    Args:
-        hadmid (int): unique hospital admission ID
-        tab_data (tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]): tuple containing DataFrames for lab, chart, input events + medications
-        lookup (tuple[pd.DataFrame, pd.DataFrame]): tuple of DataFrames used as dictionaries to map item IDs to natural language descriptions
-
-    Returns:
-        pd.DataFrame: DataFrame of combined structured data, ordered by timestamp
-    """
     # takes hospital admission and returns dataframe of chronologically ordered structured data
     lab_df, chart_df, input_df, meds_df = tab_data
     lab_items, chart_items = lookup
     
-    # get structured data (lab, chart, input events for relevant hospital admission)
+    # get structured data (lab. chart, input events for relevant hospital admission)
     patient_lab = lab_df[lab_df['HADM_ID'] == hadmid]
     patient_chart = chart_df[chart_df['HADM_ID'] == hadmid]
-    patient_input = input_df[input_df['HADM_ID'] == hadmid]
     patient_input = input_df[input_df['HADM_ID'] == hadmid]
     patient_meds = meds_df[meds_df['HADM_ID'] == hadmid]
 
@@ -168,23 +117,24 @@ def get_structured(hadmid: int, tab_data: tuple[pd.DataFrame, pd.DataFrame, pd.D
     patient_struc = patient_struc.sort_values(by='CHARTTIME')
     patient_struc = patient_struc.reset_index(drop=True)
 
-    # remove duplicate entries in structured data
+    # remove duplicate entries in structured data here
     patient_struc = remove_duplicates_struc(patient_struc)
 
     struc_tl = temporal_order_struc(patient_struc)
     return struc_tl
 
 
+def get_prog_notes(hadmid: int, notes: pd.DataFrame) -> pd.DataFrame:
+    patient_notes = notes[notes['HADM_ID'] == hadmid]
+    patient_notes = patient_notes.sort_values(by='CHARTTIME')
+    patient_notes = patient_notes.reset_index(drop=True)
+    tl_prog = patient_notes[["CHARTTIME", 'TEXT']]
+    tl_prog = tl_prog.rename(columns={'CHARTTIME': 'TIME'})
+    tl_prog['IS_NOTE'] = 1
+    return tl_prog
+
+
 def temporal_order_note(note_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Order note data by timestamp
-
-    Args:
-        note_df (pd.DataFrame): collected notes for one hospital admission
-
-    Returns:
-        pd.DataFrame: ordered notes 
-    """
     timestamps = []
     text = []
 
@@ -199,20 +149,13 @@ def temporal_order_note(note_df: pd.DataFrame) -> pd.DataFrame:
     notes_tl = notes_tl.sort_values(by='TIME')
     return notes_tl
 
-def get_notes(hadmid: int, notes: pd.DataFrame) -> pd.DataFrame:
-    """
-    Extracts all notes for a given hadmid except discharge summaries. Removes duplicate notes at same timestamp.
 
-    Args:
-        hadmid (int): unique hospital admission ID
-        notes (pd.DataFrame): DataFrame containing all notes in the dataset
-
-    Returns:
-        pd.DataFrame: DataFrame of all notes for the given hadmid
-    """
+def get_ehr_notes(hadmid: int, notes: pd.DataFrame) -> pd.DataFrame:
+    # only get non-PN notes
     patient_notes = notes[notes['HADM_ID'] == hadmid]
-    patient_notes = patient_notes[patient_notes['CATEGORY'] != 'Discharge summary']
-    notes_tl = temporal_order_note(patient_notes)
+    ehr_notes = patient_notes[~patient_notes['DESCRIPTION'].str.contains(r'\bProgress Note\b', case=False)]
+    ehr_notes = ehr_notes.dropna(subset='CHARTTIME')
+    notes_tl = temporal_order_note(ehr_notes)
 
     # remove notes at same timestamp
     notes_tl = notes_tl.drop_duplicates(subset=['TIME'], keep='last')
@@ -220,14 +163,6 @@ def get_notes(hadmid: int, notes: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_rel_times(df):
-    """_summary_
-
-    Args:
-        df (_type_): _description_
-
-    Returns:
-        _type_: _description_
-    """
     # convert absolute timestamps to relative ones (w.r.t first entry)
     format_str = r'%Y-%m-%d %H:%M:%S'
     rel_times = []
@@ -258,66 +193,76 @@ def get_rel_times(df):
     df['REL_TIME'] = rel_times
     return df
 
-def get_last_day(df: pd.DataFrame) -> pd.DataFrame:
-    """_summary_
 
-    Args:
-        df (pd.DataFrame): _description_
-
-    Returns:
-        pd.DataFrame: _description_
-    """
-    # get data from last 24h before discharge/last entry
+def day_count(df: pd.DataFrame) -> pd.DataFrame:
     format_str = r'%Y-%m-%d %H:%M:%S'
-
-    for i in df.index[::-1]:
-        if i == len(df)-1:
-            last_entry = datetime.strptime(df.iloc[i]['TIME'], format_str)
+    days = []
+    for i in df.index:
+        if i == 0:
+            first_entry = datetime.strptime(df.iloc[i]['TIME'], format_str)
+            days.append(1)
         else:
             current_entry = datetime.strptime(df.iloc[i]['TIME'], format_str)
-            diff_days = (last_entry - current_entry).days
-            if diff_days != 0:
-            # if diff_days >= 2:
-                return df[i+1:].reset_index(drop=True)
-    return df.reset_index(drop=True)
-
-
-def format_result(df: pd.DataFrame) -> pd.DataFrame:
-    # move relative time column to front
-    col = df.pop('REL_TIME')
-    df.insert(0, 'REL_TIME', col)
+            diff_days = (current_entry - first_entry).days
+            days.append(diff_days + 1)
+    df['DAY'] = days
     return df
 
 
+def get_gold(df: pd.DataFrame) -> pd.DataFrame:
+    day_groups = {day: group for day, group in df.groupby('DAY')}
+
+    days = []
+    pns = []
+
+    for day, group in day_groups.items():
+        if len(group[group['IS_NOTE'] != 0]):
+            progress_note = group[group['IS_NOTE'] == 1].iloc[-1]['TEXT']
+            days.append(day)
+            pns.append(progress_note)
+    return pd.DataFrame(zip(days, pns), columns=['DAY', 'TEXT'])
+
+
 def main():
-    # to add: argparse for modality (both, notes, structured), time window, code to get gold data
     pd.options.mode.chained_assignment = None  # Turns off the warning
 
-    args = parse_args()
-    target_path = args.target_path
-    modality = args.modality
-    window = args.window
-
-    target_path = 'data/target_population/filtered'
-
-    icu_df = pd.read_csv(f'{target_path}/icu_2000.csv')
-    notes = pd.read_csv(f'{target_path}/notes_2000.csv')
-    input_cv = pd.read_csv(f'{target_path}/inputeventscv_2000.csv')
-    input_mv = pd.read_csv(f'{target_path}/inputeventsmv_2000.csv')
-    lab_df = pd.read_csv(f'{target_path}/labs_2000.csv')
-    chart_df = pd.read_csv(f'{target_path}/charts_2000.csv')
-    meds_df = pd.read_csv(f'{target_path}/meds_2000.csv')
-    lab_items = pd.read_csv('data/MIMIC-III/D_LABITEMS.csv')
-    chart_items = pd.read_csv('data/MIMIC-III/D_ITEMS.csv')
-
-    admission_ids = icu_df['HADM_ID'].to_list()
-
-    target_dir = 'final_cloud_code/24h_all_abs'
+    # maybe adjust paths
+    # icu_df = pd.read_csv('../data/MIMIC-III/target_population/sample_icu.csv')
+    # icu_df = icu_df[icu_df['DECEASED'] == 0]
+    icu_df = pd.read_csv('data/expand_cohort/icu.csv')
+    icu_df = icu_df[icu_df['LOS'] >= 3]
+    # edit notes to just be phys progress notes
+    # notes = pd.read_csv('../data/MIMIC-III/target_population/sample_notes.csv')
+    notes = pd.read_csv('data/expand_cohort/notes.csv')
+    phys = notes[notes['CATEGORY'] == 'Physician ']
+    prog = phys[phys['DESCRIPTION'].str.contains(r'\bProgress Note\b', case=False)]
     
-    # for admission_id in tqdm(batch_ids):
-    for admission_id in tqdm(admission_ids):
-        admission_id = int(admission_id)
-        dbsource = icu_df[icu_df['HADM_ID'] == int(admission_id)]['DBSOURCE'].values[0]
+    # input_cv = pd.read_csv('../data/MIMIC-III/target_population/target_inputeventscv.csv')
+    # input_mv = pd.read_csv('../data/MIMIC-III/INPUTEVENTS_MV.csv')
+    input_cv = pd.read_csv('data/expand_cohort/inputs_cv.csv')
+    input_mv = pd.read_csv('data/expand_cohort/inputs_mv.csv')
+    input_mv = input_mv.rename(columns={'STARTTIME': 'CHARTTIME'})
+
+    # lab_df = pd.read_csv('../data/MIMIC-III/target_population/target_labevents.csv')
+    # chart_df = pd.read_csv('../data/MIMIC-III/target_population/filtered_chartevents_1000.csv')
+    # meds_df = pd.read_csv('../data/MIMIC-III/target_population/sample_meds.csv')
+    lab_df = pd.read_csv('data/expand_cohort/labs.csv')
+    chart_df = pd.read_csv('data/expand_cohort/charts.csv')
+    meds_df = pd.read_csv('data/expand_cohort/meds.csv')
+
+    lab_items = pd.read_csv('../data/MIMIC-III/D_LABITEMS.csv')
+    chart_items = pd.read_csv('../data/MIMIC-III/D_ITEMS.csv')
+
+    prog_ids = prog['HADM_ID'].unique()
+    icu_prog = icu_df[icu_df['HADM_ID'].isin(prog_ids)]
+    admission_id_list = icu_prog['HADM_ID'].to_list()
+
+    sample_four_ids = icu_df['HADM_ID'].unique()
+
+    # for admission_id in tqdm(admission_id_list):
+    for admission_id in tqdm(sample_four_ids):
+        # admission_id = 139787
+        dbsource = icu_df[icu_df['HADM_ID'] == admission_id]['DBSOURCE'].values[0]
         if dbsource == 'carevue':
             input_df = input_cv
         else:
@@ -326,23 +271,22 @@ def main():
         tab_data = (lab_df, chart_df, input_df, meds_df)
         dictionaries = (lab_items, chart_items)
 
-        structured_data = get_structured(admission_id, tab_data, dictionaries)
-        note_data = get_notes(admission_id, notes)
+        struc_tl = get_structured(admission_id, tab_data, dictionaries)
+        tl_prog = get_prog_notes(admission_id, prog)
+        notes_tl = get_ehr_notes(admission_id, notes)
 
-        combined_tl = pd.concat((structured_data, note_data))
-        # combined_tl = note_data
-        combined_tl = combined_tl.sort_values(by='TIME').reset_index(drop=True)
+        # combined = pd.concat([struc_tl, tl_prog])
+        combined = pd.concat([struc_tl, tl_prog, notes_tl])
+        combined = combined.dropna(subset='TIME')
+        combined = combined.sort_values(by='TIME').reset_index(drop=True)
+        combined['IS_NOTE'] = combined['IS_NOTE'].apply(lambda x: 1 if x == 1 else 0)
 
-        combined_tl_rel = get_rel_times(combined_tl)
-        combined_tl_rel = combined_tl_rel.dropna(subset=['TIME'])
-        last_day = get_last_day(combined_tl_rel)
+        combined_w_days = day_count(combined)
+        combined_tl_rel = get_rel_times(combined_w_days)
+        gold_notes = get_gold(combined_w_days)
 
-        formatted_combined = format_result(combined_tl_rel)
-        formatted_last_day = format_result(last_day)
-
-        # formatted_combined.to_csv(f'data/MIMIC-III/target_population/cohort_2000/batch{i}/chronology_{admission_id}.csv', index=False)
-        formatted_last_day.to_csv(f'{target_dir}/{window}_{modality}_{admission_id}.csv', index=False)
-        # formatted_last_day.to_csv(f'{target_dir}/b{i+1}/48h_{admission_id}.csv', index=False)
+        combined_tl_rel.to_csv(f'data/expand_cohort/input_all/input_{admission_id}.csv', index=False)
+        gold_notes.to_csv(f'data/expand_cohort/gold/gt_{admission_id}.csv', index=False)
 
 if __name__ == '__main__':
     main()

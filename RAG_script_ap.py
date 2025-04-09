@@ -38,8 +38,8 @@ def parse_args():
     parser = argparse.ArgumentParser()
     # parser.add_argument('--inputdir', type=str, default='RAG', help='input directory')
     parser.add_argument('--inputdir', type=str, default='input_data', help='input directory')
-    parser.add_argument('--outputdir', type=str, default='RAG_PN_output', help='output directory')
-    parser.add_argument('--method', type=int, default=-1, help='PN generation method')
+    parser.add_argument('--outputdir', type=str, default='RAG_AP_output', help='output directory')
+    parser.add_argument('--method', type=int, default=-1, help='AP generation method')
     parser.add_argument('--setting', type=str, default='gt', help='Experimental setting, gt or gen')
     args = parser.parse_args()
     return args

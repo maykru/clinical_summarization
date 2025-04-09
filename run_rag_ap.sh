@@ -1,12 +1,5 @@
 #!/usr/bin/env bash
-if [ $# -ne 1 ]; then
-    echo "Error: Please provide a generation round number as argument"
-    exit 1
-fi
-
-n=$1
-
-base_dir="RAG_PN_output/round$n"
+base_dir="results/rag_assessment_plan"
 
 mkdir -p "$base_dir/method-1"
 mkdir -p "$base_dir/method1"

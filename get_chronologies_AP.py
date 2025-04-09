@@ -5,7 +5,7 @@ from tqdm import tqdm
 
 def filter(labs: pd.DataFrame, charts: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     # remove duplicates and keep only abnormal lab values
-    # filtering by warning in charts - remove 0 values?    
+    # filtering by warning in charts - remove 0 values    
 
     duplicates = pd.merge(charts, labs, on=['CHARTTIME', 'ITEM_DESC'], how='inner')
     duplicates_row_IDs = duplicates['ROW_ID_x']
@@ -226,42 +226,36 @@ def get_gold(df: pd.DataFrame) -> pd.DataFrame:
 def main():
     pd.options.mode.chained_assignment = None  # Turns off the warning
 
-    # maybe adjust paths
-    # icu_df = pd.read_csv('../data/MIMIC-III/target_population/sample_icu.csv')
-    # icu_df = icu_df[icu_df['DECEASED'] == 0]
-    icu_df = pd.read_csv('data/expand_cohort/icu.csv')
-    icu_df = icu_df[icu_df['LOS'] >= 3]
+    target_path = 'data/target_population/filtered'
+
+    icu_df = pd.read_csv(f'{target_path}/filtered_ICUSTAYS.csv')
+
     # edit notes to just be phys progress notes
-    # notes = pd.read_csv('../data/MIMIC-III/target_population/sample_notes.csv')
-    notes = pd.read_csv('data/expand_cohort/notes.csv')
+    notes = pd.read_csv(f'{target_path}/filtered_NOTEEVENTS.csv')
     phys = notes[notes['CATEGORY'] == 'Physician ']
     prog = phys[phys['DESCRIPTION'].str.contains(r'\bProgress Note\b', case=False)]
     
-    # input_cv = pd.read_csv('../data/MIMIC-III/target_population/target_inputeventscv.csv')
-    # input_mv = pd.read_csv('../data/MIMIC-III/INPUTEVENTS_MV.csv')
-    input_cv = pd.read_csv('data/expand_cohort/inputs_cv.csv')
-    input_mv = pd.read_csv('data/expand_cohort/inputs_mv.csv')
+
+    input_cv = pd.read_csv(f'{target_path}/filtered_INPUTEVENTS_CV.csv')
+    input_mv = pd.read_csv(f'{target_path}/filtered_INPUTEVENTS_MV.csv')
     input_mv = input_mv.rename(columns={'STARTTIME': 'CHARTTIME'})
 
-    # lab_df = pd.read_csv('../data/MIMIC-III/target_population/target_labevents.csv')
-    # chart_df = pd.read_csv('../data/MIMIC-III/target_population/filtered_chartevents_1000.csv')
-    # meds_df = pd.read_csv('../data/MIMIC-III/target_population/sample_meds.csv')
-    lab_df = pd.read_csv('data/expand_cohort/labs.csv')
-    chart_df = pd.read_csv('data/expand_cohort/charts.csv')
-    meds_df = pd.read_csv('data/expand_cohort/meds.csv')
+    lab_df = pd.read_csv(f'{target_path}/filtered_LABEVENTS.csv')
+    chart_df = pd.read_csv(f'{target_path}/filtered_CHARTEVENTS.csv')
+    meds_df = pd.read_csv(f'{target_path}/filtered_PRESCRIPTIONS.csv')
 
-    lab_items = pd.read_csv('../data/MIMIC-III/D_LABITEMS.csv')
-    chart_items = pd.read_csv('../data/MIMIC-III/D_ITEMS.csv')
+    lab_items = pd.read_csv('data/MIMIC-III/D_LABITEMS.csv')
+    chart_items = pd.read_csv('data/MIMIC-III/D_ITEMS.csv')
 
+    output_dir = 'assessment_plan/input'
+    gt_dir = 'assessment_plan/gold'
+
+    # get list of admissions that contain physician progress notes - note all do
     prog_ids = prog['HADM_ID'].unique()
     icu_prog = icu_df[icu_df['HADM_ID'].isin(prog_ids)]
     admission_id_list = icu_prog['HADM_ID'].to_list()
 
-    sample_four_ids = icu_df['HADM_ID'].unique()
-
-    # for admission_id in tqdm(admission_id_list):
-    for admission_id in tqdm(sample_four_ids):
-        # admission_id = 139787
+    for admission_id in tqdm(admission_id_list):
         dbsource = icu_df[icu_df['HADM_ID'] == admission_id]['DBSOURCE'].values[0]
         if dbsource == 'carevue':
             input_df = input_cv
@@ -275,7 +269,6 @@ def main():
         tl_prog = get_prog_notes(admission_id, prog)
         notes_tl = get_ehr_notes(admission_id, notes)
 
-        # combined = pd.concat([struc_tl, tl_prog])
         combined = pd.concat([struc_tl, tl_prog, notes_tl])
         combined = combined.dropna(subset='TIME')
         combined = combined.sort_values(by='TIME').reset_index(drop=True)
@@ -285,8 +278,8 @@ def main():
         combined_tl_rel = get_rel_times(combined_w_days)
         gold_notes = get_gold(combined_w_days)
 
-        combined_tl_rel.to_csv(f'data/expand_cohort/input_all/input_{admission_id}.csv', index=False)
-        gold_notes.to_csv(f'data/expand_cohort/gold/gt_{admission_id}.csv', index=False)
+        combined_tl_rel.to_csv(f'{output_dir}/input_{admission_id}.csv', index=False)
+        gold_notes.to_csv(f'{gt_dir}/gt_{admission_id}.csv', index=False)
 
 if __name__ == '__main__':
     main()

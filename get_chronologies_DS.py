@@ -7,7 +7,6 @@ import argparse
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--target_path', type=str, help='path to directory containing MIMIC data')
     parser.add_argument('--modality', type=str, default='both', help='modality - both, notes or tab')
     parser.add_argument('--window', type=int, default=24, help='temporal context window - 24 or 48')
     args = parser.parse_args()
@@ -199,7 +198,7 @@ def temporal_order_note(note_df: pd.DataFrame) -> pd.DataFrame:
     notes_tl = notes_tl.sort_values(by='TIME')
     return notes_tl
 
-def get_notes(hadmid: int, notes: pd.DataFrame) -> pd.DataFrame:
+def get_notes(hadmid: int, notes: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     """
     Extracts all notes for a given hadmid except discharge summaries. Removes duplicate notes at same timestamp.
 
@@ -216,7 +215,15 @@ def get_notes(hadmid: int, notes: pd.DataFrame) -> pd.DataFrame:
 
     # remove notes at same timestamp
     notes_tl = notes_tl.drop_duplicates(subset=['TIME'], keep='last')
-    return notes_tl
+
+    # get ground truth discharge summary
+    patient_notes = notes[notes['HADM_ID'] == int(hadmid)]
+    discharge = patient_notes[patient_notes['CATEGORY'] == 'Discharge summary']
+    if discharge.empty:
+        print(f'{hadmid} has not discharge summary')                #very rare
+    else:
+        discharge_txt = patient_notes[patient_notes['CATEGORY'] == 'Discharge summary']['TEXT'].values[0]
+    return notes_tl, discharge_txt
 
 
 def get_rel_times(df):
@@ -258,7 +265,7 @@ def get_rel_times(df):
     df['REL_TIME'] = rel_times
     return df
 
-def get_last_day(df: pd.DataFrame) -> pd.DataFrame:
+def get_last_day(df: pd.DataFrame, window: int) -> pd.DataFrame:
     """_summary_
 
     Args:
@@ -276,9 +283,12 @@ def get_last_day(df: pd.DataFrame) -> pd.DataFrame:
         else:
             current_entry = datetime.strptime(df.iloc[i]['TIME'], format_str)
             diff_days = (last_entry - current_entry).days
-            if diff_days != 0:
-            # if diff_days >= 2:
-                return df[i+1:].reset_index(drop=True)
+            if window == 24:
+                if diff_days != 0:
+                    return df[i+1:].reset_index(drop=True)
+            elif window == 48:
+                if diff_days >= 2:
+                    return df[i+1:].reset_index(drop=True)
     return df.reset_index(drop=True)
 
 
@@ -290,29 +300,28 @@ def format_result(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def main():
-    # to add: argparse for modality (both, notes, structured), time window, code to get gold data
     pd.options.mode.chained_assignment = None  # Turns off the warning
 
     args = parse_args()
-    target_path = args.target_path
     modality = args.modality
     window = args.window
 
     target_path = 'data/target_population/filtered'
 
-    icu_df = pd.read_csv(f'{target_path}/icu_2000.csv')
-    notes = pd.read_csv(f'{target_path}/notes_2000.csv')
-    input_cv = pd.read_csv(f'{target_path}/inputeventscv_2000.csv')
-    input_mv = pd.read_csv(f'{target_path}/inputeventsmv_2000.csv')
-    lab_df = pd.read_csv(f'{target_path}/labs_2000.csv')
-    chart_df = pd.read_csv(f'{target_path}/charts_2000.csv')
-    meds_df = pd.read_csv(f'{target_path}/meds_2000.csv')
+    icu_df = pd.read_csv(f'{target_path}/filtered_ICUSTAYS.csv')
+    notes = pd.read_csv(f'{target_path}/filtered_NOTEEVENTS.csv')
+    input_cv = pd.read_csv(f'{target_path}/filtered_INPUTEVENTS_CV.csv')
+    input_mv = pd.read_csv(f'{target_path}/filtered_INPUTEVENTS_MV.csv')
+    lab_df = pd.read_csv(f'{target_path}/filtered_LABEVENTS.csv')
+    chart_df = pd.read_csv(f'{target_path}/filtered_CHARTEVENTS.csv')
+    meds_df = pd.read_csv(f'{target_path}/filtered_PRESCRIPTIONS.csv')
     lab_items = pd.read_csv('data/MIMIC-III/D_LABITEMS.csv')
     chart_items = pd.read_csv('data/MIMIC-III/D_ITEMS.csv')
 
     admission_ids = icu_df['HADM_ID'].to_list()
 
-    target_dir = 'final_cloud_code/24h_all_abs'
+    output_dir = 'discharge_sum/input'
+    gt_dir = 'discharge_sum/gold'
     
     # for admission_id in tqdm(batch_ids):
     for admission_id in tqdm(admission_ids):
@@ -327,22 +336,30 @@ def main():
         dictionaries = (lab_items, chart_items)
 
         structured_data = get_structured(admission_id, tab_data, dictionaries)
-        note_data = get_notes(admission_id, notes)
+        note_data, gold_txt = get_notes(admission_id, notes)
 
-        combined_tl = pd.concat((structured_data, note_data))
-        # combined_tl = note_data
+        if modality == 'both':
+            combined_tl = pd.concat((structured_data, note_data))
+        elif modality == 'notes':
+            combined_tl = note_data
+        else:           # modality == tab
+            combined_tl = structured_data
+        
         combined_tl = combined_tl.sort_values(by='TIME').reset_index(drop=True)
 
         combined_tl_rel = get_rel_times(combined_tl)
         combined_tl_rel = combined_tl_rel.dropna(subset=['TIME'])
-        last_day = get_last_day(combined_tl_rel)
 
-        formatted_combined = format_result(combined_tl_rel)
+        last_day = get_last_day(combined_tl_rel, window)
+
         formatted_last_day = format_result(last_day)
 
-        # formatted_combined.to_csv(f'data/MIMIC-III/target_population/cohort_2000/batch{i}/chronology_{admission_id}.csv', index=False)
-        formatted_last_day.to_csv(f'{target_dir}/{window}_{modality}_{admission_id}.csv', index=False)
-        # formatted_last_day.to_csv(f'{target_dir}/b{i+1}/48h_{admission_id}.csv', index=False)
+        # write gold discharge summary to text file
+        with open(f'{gt_dir}/gtsummary_{admission_id}.txt', 'w') as text_file:
+            text_file.write(gold_txt)
+
+        formatted_last_day.to_csv(f'{output_dir}/{window}_{modality}_{admission_id}.csv', index=False)
+
 
 if __name__ == '__main__':
     main()

@@ -8,7 +8,6 @@ import argparse
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--target_path', type=str, help='path to directory containing MIMIC data')
     parser.add_argument('--sample_size', type=int, default=1000, help='number of admissions in sample')
     args = parser.parse_args()
     return args
@@ -50,11 +49,9 @@ def filter_icu(target_path: str, sample_size: int) -> tuple[list[int], pd.DataFr
 
 def main():
     args = parse_args()
-    target_path = args.target_path
     sample_size = args.sample_size
 
-    if not target_path:
-        raise TypeError("Target_path cannot be None. Please specify path to MIMIC directory.")
+    target_path = 'data/MIMIC-III'
 
     hadmids, sampled_icu = filter_icu(target_path, sample_size)
 
@@ -63,7 +60,7 @@ def main():
     except OSError:
         pass
 
-    sampled_icu.to_csv(f'{target_path}/filtered/filtered_icu.csv', index=False)
+    sampled_icu.to_csv(f'{target_path}/filtered/filtered_ICUSTAYS.csv', index=False)
 
     files = ['INPUTEVENTS_CV', 'INPUTEVENTS_MV', 'LABEVENTS', 'CHARTEVENTS', 'PRESCRIPTIONS', 'NOTEEVENTS']
     chunk_size = 10 ** 6  

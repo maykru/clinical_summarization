@@ -1,15 +1,16 @@
 # Clinical Summarization
-(work in progress)
 ## Overview
 This repository contains code for the paper 'Zero-shot Large Language Models for Long Clinical Text Summarization with Temporal Reasoning'
 
 Link: https://arxiv.org/abs/2501.18724
 
-## How to run
-1. run get_target_population.py to get the filtered MIMIC files for the target population (age >= 65, LOS >= 3 days)
-2. depending on task, run either get_chronologies_DS.py (discharge summarization) or get_chronologies_AP.py (assessment and plan generation)
+## Data
+We use the MIMIC-III dataset for this paper, which is available on PhysioNet: https://physionet.org/content/mimiciii/1.4/. To access the data, a credentialed PhysioNet account, CITI training and a data use agreement is required. For this reason the data cannot be included within this repository.
 
-TODO: explain script arguments etc, add instructions for running generation 
+## How to run
+1. Run setup.sh to filter the MIMIC-III dataset and get the relevant chronologies for the discharge summarization and assessment and plan generation tasks. Modalities and time windows for discharge summarization can be selected by modifying the arguments (--modality and --window respectively) of get_chronologies_DS.py
+2. To run generation, choose the bash script corresponding to the desired task (DS or AP) and setting (direct gen or RAG)
+
 
 ## Tasks
 - Discharge summarization: given a patient chronology, generate the three sections of a discharge summary (Diagnosis, Brief Hospital Course, Discharge Instructions)
